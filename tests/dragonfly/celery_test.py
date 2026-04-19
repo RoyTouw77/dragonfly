@@ -174,6 +174,8 @@ def pubsub_worker(pubsub_celery_app):
     t.join(timeout=10)
 
 
+@pytest.mark.large
+@pytest.mark.opt_only
 def test_pubsub_publish_not_lost(pubsub_celery_app, pubsub_worker):
     """#7056: PUBLISH notifications must not be silently lost under Celery group().get()."""
     dispatch = pubsub_celery_app.tasks["group_get"]
