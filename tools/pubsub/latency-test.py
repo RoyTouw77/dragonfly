@@ -7,6 +7,7 @@ import redis
 import threading
 import time
 import statistics
+import argparse
 from concurrent.futures import ThreadPoolExecutor
 
 DRAGONFLY_HOST = "127.0.0.1"
@@ -88,43 +89,80 @@ def test_concurrent_publish(num_concurrent=16, publishes_per_client=100):
 
         r_thread.close()
 
-    # Run concurrent publishers
+    # Run concurrent publishers and measure wall-clock time
+    start_time = time.time()
     with ThreadPoolExecutor(max_workers=num_concurrent) as executor:
         futures = [executor.submit(publish_and_measure, i) for i in range(num_concurrent)]
         for f in futures:
             f.result()
+    elapsed_time = time.time() - start_time
 
     pubsub.close()
     r.close()
 
-    return latencies
+    return latencies, elapsed_time
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Test Dragonfly pub/sub latency under concurrent load"
+    )
+    parser.add_argument(
+        "--num-channels", type=int, default=16, help="Number of channels (default: 16)"
+    )
+    parser.add_argument(
+        "--publishes-per-channel", type=int, default=100, help="Messages per channel (default: 100)"
+    )
+    parser.add_argument(
+        "--num-concurrent", type=int, default=16, help="Number of concurrent clients (default: 16)"
+    )
+    parser.add_argument(
+        "--publishes-per-client", type=int, default=100, help="Publishes per client (default: 100)"
+    )
+    args = parser.parse_args()
+
     print("Testing Dragonfly pub/sub latency...\n")
 
     # Test 1: Sequential pub/sub (baseline)
     print("=" * 60)
-    print("Test 1: Sequential pub/sub (16 channels, 100 messages each)")
+    print(
+        f"Test 1: Sequential pub/sub ({args.num_channels} channels, {args.publishes_per_channel} messages each)"
+    )
     print("=" * 60)
-    latencies = test_pubsub_latency(num_channels=16, publishes_per_channel=100)
-    print(f"Messages measured: {len(latencies)}")
-    print(f"Min latency:    {min(latencies):.2f} µs")
-    print(f"p50 latency:    {statistics.median(latencies):.2f} µs")
-    print(f"p99 latency:    {sorted(latencies)[int(len(latencies)*0.99)]:.2f} µs")
-    print(f"Max latency:    {max(latencies):.2f} µs")
-    print(f"Avg latency:    {statistics.mean(latencies):.2f} µs")
+    latencies = test_pubsub_latency(
+        num_channels=args.num_channels, publishes_per_channel=args.publishes_per_channel
+    )
+    if latencies:
+        print(f"Messages measured: {len(latencies)}")
+        print(f"Min latency:    {min(latencies):.2f} µs")
+        print(f"p50 latency:    {statistics.median(latencies):.2f} µs")
+        print(f"p99 latency:    {sorted(latencies)[int(len(latencies)*0.99)]:.2f} µs")
+        print(f"Max latency:    {max(latencies):.2f} µs")
+        print(f"Avg latency:    {statistics.mean(latencies):.2f} µs")
+    else:
+        print("No measurements collected")
     print()
 
     # Test 2: Concurrent publish (16 clients, 100 publishes each)
     print("=" * 60)
-    print("Test 2: Concurrent publish (16 clients, 100 publishes each)")
+    print(
+        f"Test 2: Concurrent publish ({args.num_concurrent} clients, {args.publishes_per_client} publishes each)"
+    )
     print("=" * 60)
-    latencies = test_concurrent_publish(num_concurrent=16, publishes_per_client=100)
-    print(f"Publishes measured: {len(latencies)}")
-    print(f"Min latency:    {min(latencies):.2f} µs")
-    print(f"p50 latency:    {statistics.median(latencies):.2f} µs")
-    print(f"p99 latency:    {sorted(latencies)[int(len(latencies)*0.99)]:.2f} µs")
-    print(f"Max latency:    {max(latencies):.2f} µs")
-    print(f"Avg latency:    {statistics.mean(latencies):.2f} µs")
-    print(f"Throughput:     {len(latencies) / sum(latencies) * 1e6:.0f} ops/sec")
+    latencies, elapsed_time = test_concurrent_publish(
+        num_concurrent=args.num_concurrent, publishes_per_client=args.publishes_per_client
+    )
+    if latencies:
+        print(f"Publishes measured: {len(latencies)}")
+        print(f"Min latency:    {min(latencies):.2f} µs")
+        print(f"p50 latency:    {statistics.median(latencies):.2f} µs")
+        print(f"p99 latency:    {sorted(latencies)[int(len(latencies)*0.99)]:.2f} µs")
+        print(f"Max latency:    {max(latencies):.2f} µs")
+        print(f"Avg latency:    {statistics.mean(latencies):.2f} µs")
+        if elapsed_time > 0:
+            throughput = len(latencies) / elapsed_time
+            print(f"Throughput:     {throughput:.0f} ops/sec")
+        else:
+            print("Throughput:     N/A (elapsed time too short)")
+    else:
+        print("No measurements collected")

@@ -74,7 +74,7 @@ void ChannelStore::Remove(string_view channel, ConnectionContext* cntx, bool pat
   auto& map = pattern ? patterns_ : channels_;
   // erase_if holds the write lock for its duration, removing cntx from the SubscribeMap
   // and erasing the channel entry atomically if no subscribers remain.
-  map.erase_if(string{channel}, [&](auto& kv) {
+  map.erase_if(channel, [&](auto& kv) {
     kv.second.erase(cntx);
     return kv.second.empty();
   });

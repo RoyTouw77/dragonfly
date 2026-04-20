@@ -6,11 +6,26 @@
 #include <absl/container/flat_hash_map.h>
 #include <parallel_hashmap/phmap.h>
 
+#include <shared_mutex>
 #include <string_view>
 
 #include "facade/connection_ref.h"
 #include "facade/facade_types.h"
 #include "util/fibers/synchronization.h"
+
+// Specialize phmap::LockableImpl for util::fb2::SharedMutex.
+namespace phmap {
+template <> class LockableImpl<::util::fb2::SharedMutex> : public ::util::fb2::SharedMutex {
+ public:
+  using mutex_type = ::util::fb2::SharedMutex;
+  using Base = LockableBaseImpl<::util::fb2::SharedMutex>;
+  using SharedLock = std::shared_lock<mutex_type>;
+  using ReadWriteLock = typename Base::ReadWriteLock;
+  using UniqueLock = std::unique_lock<mutex_type>;
+  using SharedLocks = typename Base::ReadLocks;
+  using UniqueLocks = typename Base::WriteLocks;
+};
+}  // namespace phmap
 
 namespace dfly {
 
@@ -24,7 +39,7 @@ class SlotSet;
 //
 // A single global instance is shared across all threads. Concurrency is
 // provided by phmap::parallel_flat_hash_map, which shards the map into
-// N submaps each protected by its own std::mutex. Concurrent readers
+// N submaps each protected by fb2::SharedMutex. Concurrent readers
 // (e.g. PUBLISH) hold individual submap locks only while accessing that
 // submap; writers (SUBSCRIBE/UNSUBSCRIBE) hold the relevant submap lock
 // for the duration of the insert/erase.
@@ -59,7 +74,7 @@ class ChannelStore {
 
   size_t PatternCount() const;
 
-  void UnsubscribeAfterClusterSlotMigration(const cluster::SlotSet& deleted_slots);
+  void UnsubscribeAfterClusterSlotMigration(const cluster::SlotSet& sdeleted_slots);
 
  private:
   using ThreadId = unsigned;
@@ -76,8 +91,10 @@ class ChannelStore {
     }
   };
 
-  using ChannelMap =
-      phmap::parallel_flat_hash_map_m<std::string, SubscribeMap, StringViewHash, std::equal_to<>>;
+  using ChannelMap = phmap::parallel_flat_hash_map<
+      std::string, SubscribeMap, StringViewHash, std::equal_to<>,
+      phmap::priv::Allocator<std::pair<const std::string, SubscribeMap>>, 4,
+      util::fb2::SharedMutex>;
 
   using ChannelsSubMap = absl::flat_hash_map<std::string, std::vector<ChannelStore::Subscriber>>;
 
