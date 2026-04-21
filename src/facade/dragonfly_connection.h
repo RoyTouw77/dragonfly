@@ -382,6 +382,14 @@ class Connection : public util::Connection {
   // Returns true on successful execution, false on reply builder error.
   bool ReplyBatch();
 
+  // Returns true when there is unprocessed input data: either the kernel has signalled a new
+  // receive (pending_input_) or data already sits unconsumed in the read buffer (io_buf_).
+  // Note: When false, the next io_event_.await() will genuinely block, so buffered replies must be
+  // flushed before sleeping.
+  bool HasPendingInput() const {
+    return pending_input_ || io_buf_.InputLen() > 0;
+  }
+
   // Guard of the current subscription to a parsed commands async task blocker
   struct WaitEvent {
     explicit WaitEvent(ParsedCommand* cmd, util::fb2::detail::Waiter* w);

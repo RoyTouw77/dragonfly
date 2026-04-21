@@ -849,9 +849,7 @@ void Connection::HandleRequests() {
       // this connection.
       http_conn.ReleaseSocket();
     } else {  // non-http
-      // ioloop_v2 not supported for TLS & redis connections yet.
-      ioloop_v2_ =
-          GetFlag(FLAGS_experimental_io_loop_v2) && !is_tls_ && protocol_ == Protocol::MEMCACHE;
+      ioloop_v2_ = GetFlag(FLAGS_experimental_io_loop_v2) && !is_tls_;
 
       if (breaker_cb_) {
         socket_->RegisterOnErrorCb([this](int32_t mask) { this->OnBreakCb(mask); });
@@ -2473,7 +2471,15 @@ bool Connection::ReplyBatch() {
   }
 
   reply_builder_->SetBatchMode(false);
-  reply_builder_->Flush();
+
+  // V2: defer flush when more input data is available or has been notified by the kernel.
+  // V1 always flushes unconditionally.
+  if (!ioloop_v2_ || !HasPendingInput()) {
+    reply_builder_->Flush();
+  } else {
+    GetLocalConnStats().skip_pipeline_flushing++;
+  }
+
   return !reply_builder_->GetError();
 }
 
@@ -2807,6 +2813,13 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
     if (io_buf_.InputLen() == 0) {
       phase_ = READ_SOCKET;
 
+      // Conditionally flush before potentially sleeping. Skip if more input is already available
+      // (io_buf_) or notified by the kernel (pending_input_) — the loop will iterate again without
+      // sleeping. Backpressure and migration sites use unconditional Flush() directly.
+      if (!HasPendingInput()) {
+        reply_builder_->Flush();
+      }
+
       io_event_.await([this, &is_ready_to_migrate]() {
         // TODO: optimize CanReply with looking up waiter key
         // io_buf_.InputLen() > 0 is still needed for multishot flow.
@@ -2916,6 +2929,10 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
         // us "deaf" to future memory relief.
         auto sub_key = qbp.v2_pipeline_backpressure_ec.subscribe_persistent(&backpressure_waiter);
 
+        // Must flush unconditionally before backpressure sleep. The client needs the replies
+        // we already produced to free its write buffer and relieve the backpressure.
+        reply_builder_->Flush();
+
         io_event_.await([this, &is_ready_to_migrate]() {
           bool cmd_ready = parsed_head_ && parsed_head_->CanReply();
           bool under_limit = !GetQueueBackpressure().IsPipelineBufferOverLimit(
@@ -2949,6 +2966,8 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
 
     // Migration requested and actionable: skip buffer bookkeeping, jump to HandleMigrateRequest().
     if (is_ready_to_migrate()) {
+      // Flush any deferred replies before migrating to another thread.
+      reply_builder_->Flush();
       continue;
     }
 
